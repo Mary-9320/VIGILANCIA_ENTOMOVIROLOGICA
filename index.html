@@ -9,6 +9,11 @@
     <script src="https://unpkg.com/lucide@latest"></script>
     <!-- html2canvas para la descarga de imagen -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    
+    <!-- Leaflet CSS y JS (Para el mapa interactivo) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
     <style>
         .scrollbar-hide::-webkit-scrollbar { display: none; }
         .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
@@ -18,6 +23,9 @@
         .bg-celeste { background-color: #e0f2fe; } 
         .text-celeste { color: #0ea5e9; } 
         .border-celeste { border-color: #7dd3fc; } 
+
+        /* Asegurar que el mapa no se sobreponga a modales o menús */
+        #mapa-resumen { z-index: 10; }
     </style>
 </head>
 <body class="bg-slate-50 min-h-screen font-sans text-slate-900">
@@ -102,6 +110,7 @@
                     </div>
 
                     <div class="space-y-4 text-xs text-slate-600">
+                        <p><strong>GPS / Coordenadas:</strong> Usa el botón 📍 en campo para ubicar la colecta automáticamente.</p>
                         <p><strong>Folio:</strong> Identificador único de la muestra enviada.</p>
                         <p><strong>Género:</strong> Especie predominante (Aedes, Culex, etc.).</p>
                         <p><strong>Resultado:</strong> Estado virológico del pool.</p>
@@ -111,11 +120,11 @@
         </div>
     </div>
 
-    <!-- Indicador de Carga -->
+    <!-- Indicador de Carga para imagen y GPS -->
     <div id="loading-overlay" class="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 hidden">
-        <div class="bg-white p-6 rounded-2xl shadow-xl flex flex-col items-center gap-4">
-            <div class="animate-spin rounded-full h-10 w-10 border-4 border-orange-600 border-t-transparent"></div>
-            <p class="font-bold text-slate-700">Generando imagen de evidencia...</p>
+        <div class="bg-white p-6 rounded-2xl shadow-xl flex flex-col items-center gap-4 text-center">
+            <div class="animate-spin rounded-full h-10 w-10 border-4 border-orange-600 border-t-transparent mx-auto"></div>
+            <p id="loading-text" class="font-bold text-slate-700">Procesando...</p>
         </div>
     </div>
 
@@ -134,10 +143,11 @@
             { mes: 'Diciembre', semanas: [50] },
         ];
 
-        // Estado centralizado - Ahora el mes activo por defecto es Resumen
+        // Estado centralizado
         let progreso = JSON.parse(localStorage.getItem('hotspots_progreso')) || {};
         let datosTecnicos = JSON.parse(localStorage.getItem('hotspots_datos_tecnicos')) || {};
         let mesActivo = 'Resumen';
+        let mapaResumen = null; // Instancia global del mapa
 
         const totalSemanasGlobal = semanasProgramadas.reduce((acc, curr) => acc + curr.semanas.length, 0);
 
@@ -152,7 +162,6 @@
             const container = document.getElementById('tabs-meses');
             container.innerHTML = '';
             
-            // Colocamos 'Resumen' al inicio del array de opciones
             const opciones = ['Resumen', ...semanasProgramadas.map(m => m.mes)];
             
             opciones.forEach(opcion => {
@@ -177,6 +186,11 @@
             const container = document.getElementById('contenedor-principal');
             container.innerHTML = '';
             
+            if (mapaResumen) {
+                mapaResumen.remove(); // Limpiar instancia vieja del mapa si existe
+                mapaResumen = null;
+            }
+            
             if (mesActivo === 'Resumen') {
                 renderResumen(container);
             } else {
@@ -190,7 +204,7 @@
             
             mesData.semanas.forEach(numSemana => {
                 const isDone = progreso[numSemana] || false;
-                const d = datosTecnicos[numSemana] || { sector: '', folio: '', genero: '', resultado: '' };
+                const d = datosTecnicos[numSemana] || { sector: '', folio: '', genero: '', resultado: '', coordenadas: '' };
 
                 const card = document.createElement('div');
                 card.className = "bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden transition-all mb-4";
@@ -205,11 +219,12 @@
                     </div>
 
                     <div class="p-0 overflow-x-auto">
-                        <table class="w-full text-left min-w-[900px]">
+                        <table class="w-full text-left min-w-[1050px]">
                             <thead>
                                 <tr class="text-[10px] uppercase text-slate-400 bg-slate-50/50">
                                     <th class="px-4 py-3 font-semibold text-center w-12">Estado</th>
                                     <th class="px-4 py-3 font-semibold">Sector</th>
+                                    <th class="px-4 py-3 font-semibold w-48">Coordenadas (Lat, Lng)</th>
                                     <th class="px-4 py-3 font-semibold">Folio</th>
                                     <th class="px-4 py-3 font-semibold">Género</th>
                                     <th class="px-4 py-3 font-semibold">Resultado Lab</th>
@@ -222,21 +237,30 @@
                                         <i data-lucide="${isDone ? 'check-circle-2' : 'circle'}" class="${isDone ? 'text-sky-500' : 'text-slate-300'} mx-auto"></i>
                                     </td>
                                     <td class="px-2 py-4">
-                                        <input type="text" placeholder="Sector" value="${d.sector}" oninput="updateData(${numSemana}, 'sector', this.value)"
-                                            class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none">
+                                        <input type="text" placeholder="Sector" value="${d.sector || ''}" oninput="updateData(${numSemana}, 'sector', this.value)"
+                                            class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white">
                                     </td>
                                     <td class="px-2 py-4">
-                                        <input type="text" placeholder="Folio" value="${d.folio}" oninput="updateData(${numSemana}, 'folio', this.value)"
-                                            class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none">
+                                        <div class="flex items-center gap-1">
+                                            <input type="text" id="coord-${numSemana}" placeholder="Ej: 25.68, -100.31" value="${d.coordenadas || ''}" oninput="updateData(${numSemana}, 'coordenadas', this.value)"
+                                                class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white">
+                                            <button onclick="capturarGPS(${numSemana})" title="Capturar GPS actual" class="bg-slate-100 hover:bg-sky-100 text-sky-600 p-1.5 rounded transition-colors border border-slate-200">
+                                                <i data-lucide="map-pin" class="w-4 h-4"></i>
+                                            </button>
+                                        </div>
                                     </td>
                                     <td class="px-2 py-4">
-                                        <input type="text" placeholder="Género" value="${d.genero}" oninput="updateData(${numSemana}, 'genero', this.value)"
-                                            class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none">
+                                        <input type="text" placeholder="Folio" value="${d.folio || ''}" oninput="updateData(${numSemana}, 'folio', this.value)"
+                                            class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white">
+                                    </td>
+                                    <td class="px-2 py-4">
+                                        <input type="text" placeholder="Género" value="${d.genero || ''}" oninput="updateData(${numSemana}, 'genero', this.value)"
+                                            class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white">
                                     </td>
                                     <td class="px-2 py-4">
                                         <select onchange="updateData(${numSemana}, 'resultado', this.value)" 
-                                            class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none">
-                                            <option value="" ${d.resultado === '' ? 'selected' : ''}>Pendiente</option>
+                                            class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white">
+                                            <option value="" ${!d.resultado || d.resultado === '' ? 'selected' : ''}>Pendiente</option>
                                             <option value="Positivo" ${d.resultado === 'Positivo' ? 'selected' : ''}>Positivo</option>
                                             <option value="Negativo" ${d.resultado === 'Negativo' ? 'selected' : ''}>Negativo</option>
                                         </select>
@@ -276,18 +300,24 @@
             }
 
             const card = document.createElement('div');
-            card.className = "bg-white rounded-2xl shadow-sm border border-orange-200 overflow-hidden";
+            card.className = "bg-white rounded-2xl shadow-sm border border-orange-200 overflow-hidden flex flex-col";
+            
             card.innerHTML = `
                 <div class="bg-orange-50 px-6 py-4 border-b border-orange-100 flex items-center gap-2">
-                    <i data-lucide="bar-chart-3" class="text-orange-600 w-5 h-5"></i>
-                    <h3 class="font-bold text-orange-900">Consolidado de Colectas en Hotspots</h3>
+                    <i data-lucide="map" class="text-orange-600 w-5 h-5"></i>
+                    <h3 class="font-bold text-orange-900">Mapa de Colectas y Consolidado</h3>
                 </div>
+                
+                <!-- Contenedor del Mapa -->
+                <div id="mapa-resumen" class="w-full h-80 border-b border-slate-200 bg-slate-100 relative"></div>
+
                 <div class="overflow-x-auto">
                     <table class="w-full text-left">
                         <thead>
                             <tr class="text-xs uppercase text-slate-400 bg-slate-50">
                                 <th class="px-6 py-3 font-semibold">Mes / Sem</th>
                                 <th class="px-6 py-3 font-semibold">Sector</th>
+                                <th class="px-6 py-3 font-semibold">GPS</th>
                                 <th class="px-6 py-3 font-semibold">Folio</th>
                                 <th class="px-6 py-3 font-semibold">Género</th>
                                 <th class="px-6 py-3 font-semibold">Resultado</th>
@@ -298,6 +328,7 @@
                                 <tr class="hover:bg-slate-50">
                                     <td class="px-6 py-4 text-sm font-bold text-slate-700">${r.mes} (S${r.semana})</td>
                                     <td class="px-6 py-4 text-sm">${r.sector || '-'}</td>
+                                    <td class="px-6 py-4 text-[10px] text-slate-500 font-mono">${r.coordenadas ? r.coordenadas.substring(0,18)+'...' : 'Sin datos'}</td>
                                     <td class="px-6 py-4 text-sm font-mono text-sky-600">${r.folio || '-'}</td>
                                     <td class="px-6 py-4 text-sm italic">${r.genero || '-'}</td>
                                     <td class="px-6 py-4">
@@ -314,6 +345,112 @@
                 </div>
             `;
             container.appendChild(card);
+
+            // Inicializar Mapa de Leaflet después de insertar el div en el DOM
+            setTimeout(() => {
+                inicializarMapa(realizadas);
+            }, 100);
+        }
+
+        function inicializarMapa(realizadas) {
+            // Coordenadas por defecto (Centro de México) si no hay puntos
+            let centroLat = 23.6345;
+            let centroLng = -102.5528;
+            let zoomLevel = 5;
+
+            // Arreglo para guardar coordenadas válidas y ajustar el mapa automáticamente
+            const markersCoords = [];
+
+            // Configurar el mapa base
+            mapaResumen = L.map('mapa-resumen').setView([centroLat, centroLng], zoomLevel);
+            
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap',
+                maxZoom: 18
+            }).addTo(mapaResumen);
+
+            // Icono personalizado según el resultado
+            const IconoBase = L.Icon.extend({
+                options: { shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png', iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41] }
+            });
+            const iconoAzul = new IconoBase({ iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png' });
+            const iconoRojo = new IconoBase({ iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png' });
+            const iconoVerde = new IconoBase({ iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png' });
+
+            // Agregar marcadores
+            realizadas.forEach(r => {
+                if (r.coordenadas && r.coordenadas.includes(',')) {
+                    const partes = r.coordenadas.split(',');
+                    const lat = parseFloat(partes[0].trim());
+                    const lng = parseFloat(partes[1].trim());
+
+                    if (!isNaN(lat) && !isNaN(lng)) {
+                        let icon = iconoAzul; // Por defecto o pendiente
+                        if (r.resultado === 'Positivo') icon = iconoRojo;
+                        if (r.resultado === 'Negativo') icon = iconoVerde;
+
+                        const popupHtml = `
+                            <div class="text-xs">
+                                <p class="font-bold text-slate-800 border-b pb-1 mb-1">Semana ${r.semana} - Sector ${r.sector || 'N/A'}</p>
+                                <p><strong>Folio:</strong> ${r.folio || 'N/A'}</p>
+                                <p><strong>Género:</strong> ${r.genero || 'N/A'}</p>
+                                <p><strong>Lab:</strong> <span class="font-bold ${r.resultado === 'Positivo' ? 'text-red-600' : 'text-emerald-600'}">${r.resultado || 'Pendiente'}</span></p>
+                            </div>
+                        `;
+
+                        L.marker([lat, lng], {icon: icon}).addTo(mapaResumen).bindPopup(popupHtml);
+                        markersCoords.push([lat, lng]);
+                    }
+                }
+            });
+
+            // Auto-ajustar la vista del mapa para que todos los pines se vean
+            if (markersCoords.length > 0) {
+                const bounds = new L.LatLngBounds(markersCoords);
+                mapaResumen.fitBounds(bounds, { padding: [30, 30], maxZoom: 16 });
+            }
+        }
+
+        function capturarGPS(semana) {
+            const overlay = document.getElementById('loading-overlay');
+            const loadText = document.getElementById('loading-text');
+            
+            if (!navigator.geolocation) {
+                alert("Tu navegador o dispositivo no soporta Geolocalización.");
+                return;
+            }
+
+            loadText.innerText = "Obteniendo coordenadas GPS...";
+            overlay.classList.remove('hidden');
+
+            navigator.geolocation.getCurrentPosition(
+                // Éxito
+                function(position) {
+                    const lat = position.coords.latitude.toFixed(6);
+                    const lng = position.coords.longitude.toFixed(6);
+                    const coordString = `${lat}, ${lng}`;
+                    
+                    // Actualizar input visible y guardar
+                    const inputElement = document.getElementById(`coord-${semana}`);
+                    if (inputElement) {
+                        inputElement.value = coordString;
+                    }
+                    updateData(semana, 'coordenadas', coordString);
+                    
+                    overlay.classList.add('hidden');
+                },
+                // Error
+                function(error) {
+                    overlay.classList.add('hidden');
+                    let msg = "Error desconocido.";
+                    if (error.code === 1) msg = "Permiso de ubicación denegado. Activa el GPS.";
+                    if (error.code === 2) msg = "Posición no disponible (sin señal GPS).";
+                    if (error.code === 3) msg = "Tiempo de espera agotado.";
+                    alert("No se pudo obtener la ubicación: " + msg);
+                },
+                // Opciones
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+            );
         }
 
         function updateData(semana, campo, valor) {
@@ -338,7 +475,11 @@
 
         async function descargarEvidencia() {
             const overlay = document.getElementById('loading-overlay');
+            const loadText = document.getElementById('loading-text');
+            
+            loadText.innerText = "Generando imagen de evidencia...";
             overlay.classList.remove('hidden');
+
             try {
                 const element = document.getElementById('capture-area');
                 const actions = document.querySelectorAll('.action-column');
@@ -349,7 +490,12 @@
                 downloadBtn.classList.add('no-capture');
                 lateral.classList.add('no-capture');
                 
-                const canvas = await html2canvas(element, { scale: 2, backgroundColor: '#f8fafc' });
+                const canvas = await html2canvas(element, { 
+                    scale: 2, 
+                    backgroundColor: '#f8fafc',
+                    useCORS: true, // Permite cargar los tiles del mapa
+                    allowTaint: true
+                });
 
                 actions.forEach(el => el.classList.remove('no-capture'));
                 downloadBtn.classList.remove('no-capture');
@@ -359,11 +505,16 @@
                 link.download = `evidencia_hotspots_${mesActivo}_${new Date().toISOString().slice(0,10)}.png`;
                 link.href = canvas.toDataURL("image/png");
                 link.click();
-            } catch (e) { console.error(e); } finally { overlay.classList.add('hidden'); }
+            } catch (e) { 
+                console.error(e); 
+            } finally { 
+                overlay.classList.add('hidden'); 
+            }
         }
 
         window.onload = init;
     </script>
 </body>
 </html>
+
 
