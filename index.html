@@ -60,7 +60,7 @@
                 
                 <div class="flex flex-wrap items-center gap-4">
                     <!-- Botón de Descarga -->
-                    <button onclick="descargarEvidencia()" class="flex items-center gap-2 bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all shadow-md shadow-orange-100 group">
+                    <button onclick="descargarEvidencia()" class="flex items-center gap-2 bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all shadow-md shadow-orange-100 group action-btn">
                         <i data-lucide="download" class="w-4 h-4 group-hover:scale-110 transition-transform"></i>
                         Descargar Evidencia
                     </button>
@@ -110,6 +110,7 @@
                     </div>
 
                     <div class="space-y-4 text-xs text-slate-600">
+                        <p><strong>Registros:</strong> Puedes agregar múltiples sectores y folios usando el botón de añadir al final de cada semana.</p>
                         <p><strong>GPS / Coordenadas:</strong> Usa el botón 📍 en campo para ubicar la colecta automáticamente.</p>
                         <p><strong>Folio:</strong> Identificador único de la muestra enviada.</p>
                         <p><strong>Género:</strong> Especie predominante (Aedes, Culex, etc.).</p>
@@ -151,11 +152,30 @@
 
         const totalSemanasGlobal = semanasProgramadas.reduce((acc, curr) => acc + curr.semanas.length, 0);
 
+        // Migración de datos viejos (Objetos únicos -> Arreglo de objetos)
+        function sanearDatosViejos() {
+            let modificado = false;
+            for (let sem in datosTecnicos) {
+                if (datosTecnicos[sem] && !Array.isArray(datosTecnicos[sem])) {
+                    datosTecnicos[sem] = [datosTecnicos[sem]]; // Convertir objeto viejo en arreglo
+                    modificado = true;
+                }
+            }
+            if (modificado) {
+                localStorage.setItem('hotspots_datos_tecnicos', JSON.stringify(datosTecnicos));
+            }
+        }
+
         function init() {
+            sanearDatosViejos();
             renderTabs();
             renderContenido();
             actualizarIndicadoresGlobales();
             lucide.createIcons();
+        }
+
+        function createEmptyRecord() {
+            return { sector: '', folio: '', genero: '', resultado: '', coordenadas: '' };
         }
 
         function renderTabs() {
@@ -204,88 +224,138 @@
             
             mesData.semanas.forEach(numSemana => {
                 const isDone = progreso[numSemana] || false;
-                const d = datosTecnicos[numSemana] || { sector: '', folio: '', genero: '', resultado: '', coordenadas: '' };
+                
+                // Asegurar que exista al menos un registro vacío si no hay datos
+                if (!datosTecnicos[numSemana] || datosTecnicos[numSemana].length === 0) {
+                    datosTecnicos[numSemana] = [createEmptyRecord()];
+                }
+                const registros = datosTecnicos[numSemana];
 
                 const card = document.createElement('div');
-                card.className = "bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden transition-all mb-4";
+                card.className = `bg-white rounded-2xl shadow-sm border ${isDone ? 'border-sky-200' : 'border-slate-200'} overflow-hidden transition-all mb-4`;
                 
+                // Generar filas dinámicas
+                let filasHTML = '';
+                registros.forEach((d, index) => {
+                    filasHTML += `
+                        <tr class="hover:bg-slate-50/50 transition-colors">
+                            <td class="px-4 py-4 text-center font-bold text-slate-400">
+                                ${index + 1}
+                            </td>
+                            <td class="px-2 py-4">
+                                <input type="text" placeholder="Sector o Localidad" value="${d.sector || ''}" oninput="updateData(${numSemana}, ${index}, 'sector', this.value)"
+                                    class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white">
+                            </td>
+                            <td class="px-2 py-4">
+                                <div class="flex items-center gap-1">
+                                    <input type="text" id="coord-${numSemana}-${index}" placeholder="Ej: 25.68, -100.31" value="${d.coordenadas || ''}" oninput="updateData(${numSemana}, ${index}, 'coordenadas', this.value)"
+                                        class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white font-mono text-xs">
+                                    <button onclick="capturarGPS(${numSemana}, ${index})" title="Capturar GPS actual" class="bg-slate-100 hover:bg-sky-100 text-sky-600 p-1.5 rounded transition-colors border border-slate-200">
+                                        <i data-lucide="map-pin" class="w-4 h-4"></i>
+                                    </button>
+                                </div>
+                            </td>
+                            <td class="px-2 py-4">
+                                <input type="text" placeholder="Folio Muestra" value="${d.folio || ''}" oninput="updateData(${numSemana}, ${index}, 'folio', this.value)"
+                                    class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white">
+                            </td>
+                            <td class="px-2 py-4">
+                                <input type="text" placeholder="Género" value="${d.genero || ''}" oninput="updateData(${numSemana}, ${index}, 'genero', this.value)"
+                                    class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white">
+                            </td>
+                            <td class="px-2 py-4">
+                                <select onchange="updateData(${numSemana}, ${index}, 'resultado', this.value)" 
+                                    class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white ${d.resultado === 'Positivo' ? 'text-red-600 font-bold' : d.resultado === 'Negativo' ? 'text-emerald-600 font-bold' : 'text-slate-600'}">
+                                    <option value="" ${!d.resultado || d.resultado === '' ? 'selected' : ''}>Pendiente</option>
+                                    <option value="Positivo" ${d.resultado === 'Positivo' ? 'selected' : ''}>Positivo</option>
+                                    <option value="Negativo" ${d.resultado === 'Negativo' ? 'selected' : ''}>Negativo</option>
+                                </select>
+                            </td>
+                            <td class="px-2 py-4 text-center action-column">
+                                <button onclick="removeRecord(${numSemana}, ${index})" class="text-slate-300 hover:text-red-500 hover:bg-red-50 p-1.5 rounded transition-colors" title="Eliminar registro">
+                                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                });
+
                 card.innerHTML = `
-                    <div class="bg-slate-50 px-6 py-4 border-b border-slate-200 flex justify-between items-center">
+                    <div class="px-6 py-4 border-b flex flex-col md:flex-row md:justify-between md:items-center gap-4 ${isDone ? 'bg-sky-50 border-sky-200' : 'bg-slate-50 border-slate-200'}">
                         <div class="flex items-center gap-3">
-                            <span class="bg-orange-100 text-orange-700 font-bold px-3 py-1 rounded-lg text-sm">Semana ${numSemana}</span>
-                            <h3 class="font-semibold text-slate-700">Registro Técnico</h3>
+                            <span class="${isDone ? 'bg-sky-600 text-white' : 'bg-orange-100 text-orange-700'} font-bold px-3 py-1 rounded-lg text-sm transition-colors">Semana ${numSemana}</span>
+                            <h3 class="font-semibold text-slate-700">Registros de Colecta</h3>
                         </div>
-                        ${isDone ? '<span class="text-xs font-bold text-sky-600 bg-sky-100 px-2 py-1 rounded">COMPLETADO</span>' : ''}
+                        <div class="flex items-center gap-3">
+                            ${isDone ? '<span class="text-xs font-bold text-sky-600 bg-sky-100 px-2 py-1 rounded flex items-center gap-1"><i data-lucide="check-circle-2" class="w-3 h-3"></i> COMPLETADA</span>' : ''}
+                            <button onclick="toggleColecta(${numSemana})" class="text-xs font-bold px-4 py-2 rounded-lg transition-all ${isDone ? 'bg-white border border-sky-200 text-sky-700 hover:bg-sky-100' : 'bg-orange-600 text-white shadow-sm hover:bg-orange-700'} action-btn">
+                                ${isDone ? 'DESMARCAR' : 'MARCAR SEMANA LISTA'}
+                            </button>
+                        </div>
                     </div>
 
-                    <div class="p-0 overflow-x-auto">
+                    <div class="p-0 overflow-x-auto ${isDone ? 'opacity-80' : ''}">
                         <table class="w-full text-left min-w-[1050px]">
                             <thead>
                                 <tr class="text-[10px] uppercase text-slate-400 bg-slate-50/50">
-                                    <th class="px-4 py-3 font-semibold text-center w-12">Estado</th>
+                                    <th class="px-4 py-3 font-semibold text-center w-12">#</th>
                                     <th class="px-4 py-3 font-semibold">Sector</th>
-                                    <th class="px-4 py-3 font-semibold w-48">Coordenadas (Lat, Lng)</th>
+                                    <th class="px-4 py-3 font-semibold w-56">Coordenadas (Lat, Lng)</th>
                                     <th class="px-4 py-3 font-semibold">Folio</th>
                                     <th class="px-4 py-3 font-semibold">Género</th>
-                                    <th class="px-4 py-3 font-semibold">Resultado Lab</th>
-                                    <th class="px-4 py-3 font-semibold text-right action-column">Acción</th>
+                                    <th class="px-4 py-3 font-semibold w-32">Resultado Lab</th>
+                                    <th class="px-4 py-3 font-semibold text-center w-12 action-column">Borrar</th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-slate-100">
-                                <tr class="${isDone ? 'bg-sky-50/30' : ''}">
-                                    <td class="px-4 py-4 text-center">
-                                        <i data-lucide="${isDone ? 'check-circle-2' : 'circle'}" class="${isDone ? 'text-sky-500' : 'text-slate-300'} mx-auto"></i>
-                                    </td>
-                                    <td class="px-2 py-4">
-                                        <input type="text" placeholder="Sector" value="${d.sector || ''}" oninput="updateData(${numSemana}, 'sector', this.value)"
-                                            class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white">
-                                    </td>
-                                    <td class="px-2 py-4">
-                                        <div class="flex items-center gap-1">
-                                            <input type="text" id="coord-${numSemana}" placeholder="Ej: 25.68, -100.31" value="${d.coordenadas || ''}" oninput="updateData(${numSemana}, 'coordenadas', this.value)"
-                                                class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white">
-                                            <button onclick="capturarGPS(${numSemana})" title="Capturar GPS actual" class="bg-slate-100 hover:bg-sky-100 text-sky-600 p-1.5 rounded transition-colors border border-slate-200">
-                                                <i data-lucide="map-pin" class="w-4 h-4"></i>
-                                            </button>
-                                        </div>
-                                    </td>
-                                    <td class="px-2 py-4">
-                                        <input type="text" placeholder="Folio" value="${d.folio || ''}" oninput="updateData(${numSemana}, 'folio', this.value)"
-                                            class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white">
-                                    </td>
-                                    <td class="px-2 py-4">
-                                        <input type="text" placeholder="Género" value="${d.genero || ''}" oninput="updateData(${numSemana}, 'genero', this.value)"
-                                            class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white">
-                                    </td>
-                                    <td class="px-2 py-4">
-                                        <select onchange="updateData(${numSemana}, 'resultado', this.value)" 
-                                            class="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-1 focus:ring-orange-500 outline-none bg-white">
-                                            <option value="" ${!d.resultado || d.resultado === '' ? 'selected' : ''}>Pendiente</option>
-                                            <option value="Positivo" ${d.resultado === 'Positivo' ? 'selected' : ''}>Positivo</option>
-                                            <option value="Negativo" ${d.resultado === 'Negativo' ? 'selected' : ''}>Negativo</option>
-                                        </select>
-                                    </td>
-                                    <td class="px-4 py-4 text-right action-column">
-                                        <button onclick="toggleColecta(${numSemana})"
-                                            class="text-xs font-bold px-4 py-2 rounded-lg transition-all ${isDone ? 'bg-sky-100 text-sky-700' : 'bg-orange-600 text-white shadow-sm'}">
-                                            ${isDone ? 'LISTO' : 'MARCAR'}
-                                        </button>
-                                    </td>
-                                </tr>
+                                ${filasHTML}
                             </tbody>
                         </table>
+                    </div>
+                    
+                    <div class="bg-slate-50/50 px-6 py-3 border-t border-slate-100 flex justify-center action-column">
+                        <button onclick="addRecord(${numSemana})" class="flex items-center gap-2 text-sm font-bold text-sky-600 hover:text-sky-800 bg-sky-50 hover:bg-sky-100 px-4 py-1.5 rounded-full transition-colors">
+                            <i data-lucide="plus" class="w-4 h-4"></i> Añadir Sector/Folio a S${numSemana}
+                        </button>
                     </div>
                 `;
                 container.appendChild(card);
             });
         }
 
+        // Agregar un nuevo registro vacío a la semana
+        function addRecord(semana) {
+            if (!datosTecnicos[semana]) datosTecnicos[semana] = [];
+            datosTecnicos[semana].push(createEmptyRecord());
+            localStorage.setItem('hotspots_datos_tecnicos', JSON.stringify(datosTecnicos));
+            renderContenido();
+        }
+
+        // Eliminar un registro específico
+        function removeRecord(semana, index) {
+            if (confirm("¿Estás seguro de eliminar este registro?")) {
+                datosTecnicos[semana].splice(index, 1);
+                // Si borra todos, dejar al menos uno vacío para que no desaparezca la tabla
+                if (datosTecnicos[semana].length === 0) {
+                    datosTecnicos[semana].push(createEmptyRecord());
+                }
+                localStorage.setItem('hotspots_datos_tecnicos', JSON.stringify(datosTecnicos));
+                renderContenido();
+            }
+        }
+
         function renderResumen(container) {
             const realizadas = [];
             semanasProgramadas.forEach(m => {
                 m.semanas.forEach(s => {
-                    if (progreso[s]) {
-                        realizadas.push({ mes: m.mes, semana: s, ...datosTecnicos[s] });
+                    if (progreso[s] && datosTecnicos[s]) {
+                        // Iterar por cada registro de esa semana
+                        datosTecnicos[s].forEach((rec, idx) => {
+                            // Solo agregamos al resumen los que tengan al menos folio o sector o coordenadas llenas
+                            if (rec.sector || rec.folio || rec.coordenadas) {
+                                realizadas.push({ mes: m.mes, semana: s, id: idx + 1, ...rec });
+                            }
+                        });
                     }
                 });
             });
@@ -294,7 +364,7 @@
                 container.innerHTML = `
                     <div class="bg-white p-12 rounded-2xl border-2 border-dashed border-slate-200 text-center">
                         <i data-lucide="clipboard-list" class="w-12 h-12 text-slate-300 mx-auto mb-4"></i>
-                        <p class="text-slate-500 font-medium">No hay colectas realizadas para mostrar en el resumen.</p>
+                        <p class="text-slate-500 font-medium">No hay semanas marcadas como listas o no hay registros capturados.</p>
                     </div>`;
                 return;
             }
@@ -303,9 +373,12 @@
             card.className = "bg-white rounded-2xl shadow-sm border border-orange-200 overflow-hidden flex flex-col";
             
             card.innerHTML = `
-                <div class="bg-orange-50 px-6 py-4 border-b border-orange-100 flex items-center gap-2">
-                    <i data-lucide="map" class="text-orange-600 w-5 h-5"></i>
-                    <h3 class="font-bold text-orange-900">Mapa de Colectas y Consolidado</h3>
+                <div class="bg-orange-50 px-6 py-4 border-b border-orange-100 flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="map" class="text-orange-600 w-5 h-5"></i>
+                        <h3 class="font-bold text-orange-900">Mapa de Colectas y Consolidado</h3>
+                    </div>
+                    <span class="text-xs font-bold text-orange-700 bg-orange-200 px-2 py-1 rounded-full">${realizadas.length} Puntos</span>
                 </div>
                 
                 <!-- Contenedor del Mapa -->
@@ -326,7 +399,7 @@
                         <tbody class="divide-y divide-slate-100">
                             ${realizadas.map(r => `
                                 <tr class="hover:bg-slate-50">
-                                    <td class="px-6 py-4 text-sm font-bold text-slate-700">${r.mes} (S${r.semana})</td>
+                                    <td class="px-6 py-4 text-sm font-bold text-slate-700">${r.mes} (S${r.semana}) <span class="text-xs font-normal text-slate-400 block">Reg #${r.id}</span></td>
                                     <td class="px-6 py-4 text-sm">${r.sector || '-'}</td>
                                     <td class="px-6 py-4 text-[10px] text-slate-500 font-mono">${r.coordenadas ? r.coordenadas.substring(0,18)+'...' : 'Sin datos'}</td>
                                     <td class="px-6 py-4 text-sm font-mono text-sky-600">${r.folio || '-'}</td>
@@ -392,6 +465,7 @@
                         const popupHtml = `
                             <div class="text-xs">
                                 <p class="font-bold text-slate-800 border-b pb-1 mb-1">Semana ${r.semana} - Sector ${r.sector || 'N/A'}</p>
+                                <p><strong>Reg #:</strong> ${r.id}</p>
                                 <p><strong>Folio:</strong> ${r.folio || 'N/A'}</p>
                                 <p><strong>Género:</strong> ${r.genero || 'N/A'}</p>
                                 <p><strong>Lab:</strong> <span class="font-bold ${r.resultado === 'Positivo' ? 'text-red-600' : 'text-emerald-600'}">${r.resultado || 'Pendiente'}</span></p>
@@ -411,7 +485,7 @@
             }
         }
 
-        function capturarGPS(semana) {
+        function capturarGPS(semana, index) {
             const overlay = document.getElementById('loading-overlay');
             const loadText = document.getElementById('loading-text');
             
@@ -431,11 +505,11 @@
                     const coordString = `${lat}, ${lng}`;
                     
                     // Actualizar input visible y guardar
-                    const inputElement = document.getElementById(`coord-${semana}`);
+                    const inputElement = document.getElementById(`coord-${semana}-${index}`);
                     if (inputElement) {
                         inputElement.value = coordString;
                     }
-                    updateData(semana, 'coordenadas', coordString);
+                    updateData(semana, index, 'coordenadas', coordString);
                     
                     overlay.classList.add('hidden');
                 },
@@ -453,9 +527,12 @@
             );
         }
 
-        function updateData(semana, campo, valor) {
-            if (!datosTecnicos[semana]) datosTecnicos[semana] = {};
-            datosTecnicos[semana][campo] = valor;
+        // Actualizado para manejar el índice del registro
+        function updateData(semana, index, campo, valor) {
+            if (!datosTecnicos[semana]) datosTecnicos[semana] = [createEmptyRecord()];
+            if (!datosTecnicos[semana][index]) datosTecnicos[semana][index] = createEmptyRecord();
+            
+            datosTecnicos[semana][index][campo] = valor;
             localStorage.setItem('hotspots_datos_tecnicos', JSON.stringify(datosTecnicos));
         }
 
@@ -483,11 +560,12 @@
             try {
                 const element = document.getElementById('capture-area');
                 const actions = document.querySelectorAll('.action-column');
-                const downloadBtn = document.querySelector('button[onclick="descargarEvidencia()"]');
+                const btns = document.querySelectorAll('.action-btn');
                 const lateral = document.querySelector('aside');
                 
+                // Ocultar botones de acción durante la captura
                 actions.forEach(el => el.classList.add('no-capture'));
-                downloadBtn.classList.add('no-capture');
+                btns.forEach(el => el.classList.add('no-capture'));
                 lateral.classList.add('no-capture');
                 
                 const canvas = await html2canvas(element, { 
@@ -497,8 +575,9 @@
                     allowTaint: true
                 });
 
+                // Restaurar vista
                 actions.forEach(el => el.classList.remove('no-capture'));
-                downloadBtn.classList.remove('no-capture');
+                btns.forEach(el => el.classList.remove('no-capture'));
                 lateral.classList.remove('no-capture');
 
                 const link = document.createElement('a');
