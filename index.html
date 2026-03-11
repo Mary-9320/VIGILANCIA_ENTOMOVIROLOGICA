@@ -55,7 +55,12 @@
                         <h1 class="text-2xl font-bold text-orange-900 flex items-center gap-2">
                             Vigilancia Entomovirológica en Hotspots
                         </h1>
-                        <p class="text-slate-500 mt-1 font-medium">Colecta de mosquitos adultos por Semana Epidemiológica</p>
+                        <div class="flex items-center gap-3 mt-1">
+                            <p class="text-slate-500 font-medium">Colecta de mosquitos adultos por Semana Epidemiológica</p>
+                            <span id="sync-status" class="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full text-[10px] font-bold border border-slate-200 flex items-center gap-1">
+                                ⏳ Conectando...
+                            </span>
+                        </div>
                     </div>
                 </div>
                 
@@ -165,7 +170,23 @@
         </div>
     </div>
 
-    <script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Configuración de Firebase (inyectada por el entorno)
+        let app, auth, db, appId, currentUser;
+        try {
+            const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+            if (firebaseConfig) {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            }
+        } catch (e) { console.warn("Firebase no configurado localmente", e); }
+
         const semanasProgramadas = [
             { mes: 'Febrero', semanas: [6, 8] },
             { mes: 'Marzo', semanas: [10, 12] },
@@ -207,12 +228,77 @@
             }
         }
 
-        function init() {
+        async function init() {
             sanearDatosViejos();
             renderTabs();
             renderContenido();
             actualizarIndicadoresGlobales();
             lucide.createIcons();
+
+            // Iniciar sesión en la nube
+            if (auth) {
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                } catch (e) {
+                    console.error("Error auth", e);
+                    document.getElementById('sync-status').innerHTML = '⚠️ Modo Local (Error Auth)';
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    currentUser = user;
+                    if (user) {
+                        document.getElementById('sync-status').innerHTML = '<span class="text-emerald-500">●</span> Nube conectada';
+                        startCloudSync();
+                    } else {
+                        document.getElementById('sync-status').innerHTML = '⚠️ Desconectado';
+                    }
+                });
+            } else {
+                document.getElementById('sync-status').innerHTML = '💾 Guardado Local';
+            }
+        }
+
+        function startCloudSync() {
+            if (!currentUser || !db) return;
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'hotspots_state', 'global');
+            
+            onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    progreso = data.progreso || {};
+                    datosTecnicos = data.datosTecnicos || {};
+                    renderTabs();
+                    renderContenido();
+                    actualizarIndicadoresGlobales();
+                } else {
+                    // Si no existe el doc en la nube, subimos nuestros datos locales la primera vez
+                    saveToCloud();
+                }
+            }, (error) => {
+                console.error("Error syncing:", error);
+                document.getElementById('sync-status').innerHTML = '⚠️ Error de sincronización';
+            });
+        }
+
+        async function saveToCloud() {
+            if (!currentUser || !db) return;
+            document.getElementById('sync-status').innerHTML = '<span class="text-sky-500 animate-pulse">●</span> Guardando...';
+            try {
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'hotspots_state', 'global');
+                // Se guarda una copia sin referencias para evitar problemas
+                await setDoc(docRef, { 
+                    progreso: JSON.parse(JSON.stringify(progreso)), 
+                    datosTecnicos: JSON.parse(JSON.stringify(datosTecnicos)) 
+                }, { merge: true });
+                document.getElementById('sync-status').innerHTML = '<span class="text-emerald-500">●</span> Sincronizado';
+            } catch (e) {
+                console.error("Save error:", e);
+                document.getElementById('sync-status').innerHTML = '⚠️ Error al guardar';
+            }
         }
 
         function createEmptyRecord() {
@@ -373,6 +459,7 @@
             datosTecnicos[semana].push(createEmptyRecord());
             localStorage.setItem('hotspots_datos_tecnicos', JSON.stringify(datosTecnicos));
             renderContenido();
+            saveToCloud();
         }
 
         // Eliminar un registro específico
@@ -385,6 +472,7 @@
                 }
                 localStorage.setItem('hotspots_datos_tecnicos', JSON.stringify(datosTecnicos));
                 renderContenido();
+                saveToCloud();
             }
         }
 
@@ -673,6 +761,7 @@
             
             datosTecnicos[semana][index][campo] = valor;
             localStorage.setItem('hotspots_datos_tecnicos', JSON.stringify(datosTecnicos));
+            saveToCloud();
         }
 
         function toggleColecta(semana) {
@@ -680,6 +769,7 @@
             localStorage.setItem('hotspots_progreso', JSON.stringify(progreso));
             renderContenido();
             actualizarIndicadoresGlobales();
+            saveToCloud();
         }
 
         function actualizarIndicadoresGlobales() {
@@ -730,10 +820,22 @@
             }
         }
 
+        // Exponer funciones al scope global (necesario al usar type="module")
+        window.addRecord = addRecord;
+        window.removeRecord = removeRecord;
+        window.updateData = updateData;
+        window.toggleColecta = toggleColecta;
+        window.capturarGPS = capturarGPS;
+        window.abrirMapaManual = abrirMapaManual;
+        window.cerrarMapaManual = cerrarMapaManual;
+        window.confirmarMapaManual = confirmarMapaManual;
+        window.descargarEvidencia = descargarEvidencia;
+
         window.onload = init;
     </script>
 </body>
 </html>
+
 
 
 
